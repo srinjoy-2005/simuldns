@@ -1,0 +1,8 @@
+/bin/
+/dns
+/dns.exe
+/lab
+/lab.exe
+*.test
+*.prof
+/coverage.out
