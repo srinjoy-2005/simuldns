@@ -1,4 +1,4 @@
-package main
+package wire
 
 import (
 	"encoding/binary"
@@ -42,7 +42,8 @@ type ResourceRecord struct {
 	TTL   uint32
 	// Data is raw RDATA. A and AAAA contain address bytes. For record types
 	// containing compressed names, decode those names before relocating RDATA.
-	Data []byte
+	Data       []byte
+	dataOffset int
 }
 
 type Message struct {
@@ -98,7 +99,7 @@ func ParseMessage(packet []byte) (*Message, error) {
 	}}
 	offset := 12
 	for i := 0; i < int(m.Header.QDCount); i++ {
-		name, next, err := readName(packet, offset)
+		name, next, err := ReadName(packet, offset)
 		if err != nil {
 			return nil, fmt.Errorf("question %d: %w", i, err)
 		}
@@ -120,7 +121,7 @@ func ParseMessage(packet []byte) (*Message, error) {
 		{m.Header.ARCount, &m.Additional},
 	} {
 		for i := 0; i < int(section.count); i++ {
-			name, next, err := readName(packet, offset)
+			name, next, err := ReadName(packet, offset)
 			if err != nil {
 				return nil, fmt.Errorf("resource record: %w", err)
 			}
@@ -133,9 +134,10 @@ func ParseMessage(packet []byte) (*Message, error) {
 			}
 			*section.records = append(*section.records, ResourceRecord{
 				Name: name, Type: binary.BigEndian.Uint16(packet[next : next+2]),
-				Class: binary.BigEndian.Uint16(packet[next+2 : next+4]),
-				TTL:   binary.BigEndian.Uint32(packet[next+4 : next+8]),
-				Data:  append([]byte(nil), packet[next+10:end]...),
+				Class:      binary.BigEndian.Uint16(packet[next+2 : next+4]),
+				TTL:        binary.BigEndian.Uint32(packet[next+4 : next+8]),
+				Data:       append([]byte(nil), packet[next+10:end]...),
+				dataOffset: next + 10,
 			})
 			offset = end
 		}
@@ -146,9 +148,9 @@ func ParseMessage(packet []byte) (*Message, error) {
 	return m, nil
 }
 
-// readName follows compression pointers while returning the position after
+// ReadName follows compression pointers while returning the position after
 // the original name, so the caller can continue reading the enclosing record.
-func readName(packet []byte, offset int) (string, int, error) {
+func ReadName(packet []byte, offset int) (string, int, error) {
 	var labels []string
 	next := -1
 	length := 1 // Include the terminating root byte.
@@ -217,7 +219,7 @@ func (m *Message) Marshal() ([]byte, error) {
 	}
 	names := make(map[string]uint16)
 	for _, q := range m.Questions {
-		packet, err = appendName(packet, q.Name, names)
+		packet, err = AppendName(packet, q.Name, names)
 		if err != nil {
 			return nil, err
 		}
@@ -226,7 +228,7 @@ func (m *Message) Marshal() ([]byte, error) {
 	}
 	for _, section := range [][]ResourceRecord{m.Answers, m.Authority, m.Additional} {
 		for _, rr := range section {
-			packet, err = appendName(packet, rr.Name, names)
+			packet, err = AppendName(packet, rr.Name, names)
 			if err != nil {
 				return nil, err
 			}
@@ -246,7 +248,7 @@ func (m *Message) Marshal() ([]byte, error) {
 	return packet, nil
 }
 
-func appendName(packet []byte, name string, names map[string]uint16) ([]byte, error) {
+func AppendName(packet []byte, name string, names map[string]uint16) ([]byte, error) {
 	if name == "." {
 		return append(packet, 0), nil
 	}
@@ -270,4 +272,13 @@ func appendName(packet []byte, name string, names map[string]uint16) ([]byte, er
 		names[name] = uint16(start)
 	}
 	return packet, nil
+}
+
+// DomainDataName decodes name-only RDATA, such as PTR, from its original packet.
+func (rr ResourceRecord) DomainDataName(packet []byte) (string, error) {
+	name, end, err := ReadName(packet, rr.dataOffset)
+	if err == nil && end != rr.dataOffset+len(rr.Data) {
+		return "", fmt.Errorf("unexpected bytes after domain name in RDATA")
+	}
+	return name, err
 }
