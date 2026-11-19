@@ -1,6 +1,7 @@
 package main
 
 import (
+	"dns/internal/telemetry"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ func main() {
 	upstream := flag.String("upstream", "", "upstream IP:port (default: next loopback port)")
 	delay := flag.Duration("delay", time.Second, "delay before each upstream query")
 	timeout := flag.Duration("timeout", 10*time.Second, "upstream response timeout, excluding artificial delay")
+	traceNode := flag.String("trace-node", "", "emit JSON lab events on stdout for this node ID")
 	flag.Parse()
 	if *port < 1 || *port > 65535 || *delay < 0 || *timeout <= 0 {
 		log.Fatal("invalid port, delay, or timeout")
@@ -35,21 +37,25 @@ func main() {
 		}
 		*upstream = fmt.Sprintf("127.0.0.1:%d", *port+1)
 	}
-	upstreamAddr, err := net.ResolveUDPAddr("udp", *upstream)
-	if err != nil || upstreamAddr.IP == nil || upstreamAddr.Port < 1 || upstreamAddr.Port > 65535 {
-		log.Fatal("upstream must be a valid IP:port")
-	}
-	if *isMain && !upstreamAddr.IP.IsLoopback() {
-		log.Fatal("-main requires a loopback upstream; it cannot query public resolvers directly")
-	}
-	if upstreamAddr.IP.IsLoopback() && upstreamAddr.Port == *port {
-		log.Fatal("upstream cannot be this server")
+	resolved := ""
+	if *upstream != "none" {
+		upstreamAddr, err := net.ResolveUDPAddr("udp", *upstream)
+		if err != nil || upstreamAddr.IP == nil || upstreamAddr.Port < 1 || upstreamAddr.Port > 65535 {
+			log.Fatal("upstream must be a valid IP:port or none")
+		}
+		if *isMain && !upstreamAddr.IP.IsLoopback() {
+			log.Fatal("-main requires a loopback upstream; it cannot query public resolvers directly")
+		}
+		if upstreamAddr.IP.IsLoopback() && upstreamAddr.Port == *port {
+			log.Fatal("upstream cannot be this server")
+		}
+		resolved = upstreamAddr.String()
 	}
 	loaded, err := loadRecords(*path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &Server{records: loaded, upstream: upstreamAddr.String(), delay: *delay, timeout: *timeout}
+	server := &Server{records: loaded, upstream: resolved, delay: *delay, timeout: *timeout}
 	if *isMain {
 		server.cache = make(map[string]cacheEntry)
 	}
@@ -60,6 +66,17 @@ func main() {
 	}
 	defer conn.Close()
 	log.Printf("DNS listening=%s records=%s upstream=%s delay=%s cache=%t", addr, *path, server.upstream, server.delay, *isMain)
+	if *traceNode != "" {
+		encoder := json.NewEncoder(os.Stdout)
+		server.emit = func(event telemetry.Event) {
+			event.Node = *traceNode
+			event.At = time.Now()
+			if err := encoder.Encode(event); err != nil {
+				log.Printf("trace: %v", err)
+			}
+		}
+		server.emit(telemetry.Event{Kind: "ready"})
+	}
 	if err := server.serve(conn); err != nil {
 		log.Fatal(err)
 	}
