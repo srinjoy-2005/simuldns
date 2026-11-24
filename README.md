@@ -1,6 +1,53 @@
-# Sequential DNS forwarding chain
+# DNS Lab
 
-Run the same program in three terminals, from this directory:
+Build a chain of DNS resolvers, send a real UDP query, and inspect the
+timing of each hop in the browser. The resolver also runs as a standalone CLI.
+
+## Requirements
+
+- Go 1.26.5 or newer and a terminal on Linux or macOS.
+- A modern browser. The frontend is embedded in the Go controller.
+- Loopback TCP and UDP sockets. Internet access is needed only for queries
+  that reach the external upstream. `dig` and `nslookup` are optional.
+
+## Setup after cloning
+
+Clone the repository, open a terminal in the checkout, then run:
+
+```bash
+mkdir -p bin
+go build -o bin/dns .
+go build -o bin/lab ./cmd/lab
+./bin/lab
+```
+
+Open **http://127.0.0.1:8080**. Keep the controller terminal open while using the
+lab. To use another HTTP port, run `./bin/lab -listen 127.0.0.1:8081` and open
+the address printed in the terminal.
+
+1. Drag nodes to arrange them. Click a node to edit its properties. Drag its
+   output handle to another node to set its upstream, or use the selector in
+   the properties panel.
+2. Click **Run**. Any standalone resolver already using a configured port must
+   release it first, or you can change that node's port in the editor.
+3. Click **Host**, query `second.test` with type **A**, and select the lookup in
+   **Query traces**. Repeat the query to see the first resolver's cache hit.
+   Try `third.test` with type **AAAA** to see another hop. Both work offline.
+4. **Remake** replaces the running chain with the edited draft and starts with
+   fresh caches. **Stop** releases its ports and keeps the controller open.
+   **Quit** or **Ctrl+C** stops both the chain and controller. Closing the browser
+   tab leaves the controller running.
+
+The editor saves its draft in your browser. For a timing experiment, set the
+main resolver's upstream timeout to 500 ms and the second resolver's forwarding
+delay to 1,000 ms, then **Remake** and query a name that misses both local record
+maps. The caller will give up while the downstream resolver is still waiting.
+Click individual spans to inspect transaction IDs, DNS response codes, and
+returned records.
+
+## CLI-only setup
+
+Run the resolver in three separate terminals from the repository root:
 
 ```bash
 # First terminal: client-facing server, with cache
@@ -74,7 +121,7 @@ TCP fallback. Public lookups require network access to `1.1.1.1:53`.
 ## Tests
 
 ```bash
-go test ./...
+go test -race ./...
 ```
 
 Tests use local UDP sockets and a fixture in place of the public resolver. They
